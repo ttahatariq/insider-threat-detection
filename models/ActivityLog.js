@@ -6,6 +6,13 @@ const activityLogSchema = new mongoose.Schema({
   action: String,
   ipAddress: String,
   timestamp: { type: Date, default: Date.now },
+  additionalData: {
+    riskScore: { type: Number, default: 0 },
+    details: String,
+    workHours: Boolean,
+    downloadCount: Number,
+    limit: Number
+  }
 });
 
 module.exports = mongoose.model("ActivityLog", activityLogSchema);
