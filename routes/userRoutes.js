@@ -1,6 +1,6 @@
 const evaluateRisk = require("../services/riskEngine");
 const behaviorMonitor = require("../services/behaviorMonitor");
-const logActivity = require("../utils/logger");
+const { logActivity } = require("../utils/logger");
 const express = require("express");
 const router = express.Router();
 const {
@@ -172,6 +172,15 @@ router.get("/flagged-users", protect(["Admin", "Manager", "Analyst", "Intern"]),
         .select("name email role isBlocked createdAt");
     }
     
+    // Debug: Log what's being sent to frontend
+    console.log('Flagged users being sent:', users.map(user => ({
+      _id: user._id,
+      name: user.name,
+      email: user.email,
+      role: user.role,
+      riskNotes: user.riskNotes
+    })));
+    
     await logActivity(req.user, "Viewed Flagged Users", req.ip);
     res.json(users);
   } catch (error) {
@@ -215,18 +224,60 @@ router.get("/download-files", protect(["Admin", "Manager", "Analyst", "Intern"])
   try {
     // Check if user is already blocked
     if (req.user.isBlocked) {
+      // Convert riskNotes to readable format
+      const readableReasons = req.user.riskNotes.map(note => 
+        typeof note === 'string' ? note : note.reason
+      );
+      
+      console.log('User blocked, riskNotes:', req.user.riskNotes);
+      console.log('Readable reasons:', readableReasons);
+      
       return res.status(403).json({
         message: "Your account has been blocked due to suspicious behavior",
         blockedAt: req.user.blockedAt,
-        reasons: req.user.riskNotes
+        reasons: readableReasons
       });
     }
 
     // Check download limits during work hours
     const downloadCheck = await behaviorMonitor.checkDownloadLimit(req.user._id, req.user.role);
-    if (downloadCheck.exceeded) {
+    
+    // Log the download attempt for monitoring
+    await logActivity(req.user, "Download Attempt", req.ip, {
+      riskScore: 0.1, // Low risk for attempt
+      details: `Download attempt. Current: ${downloadCheck.current}, Limit: ${downloadCheck.limit}`
+    });
+    
+    if (downloadCheck.isExcessive) {
+      // Excessive downloads - immediate blocking
+      await logActivity(req.user, "CRITICAL: Excessive Downloads - Blocked", req.ip, {
+        riskScore: 1.0, // Maximum risk
+        details: `User blocked for excessive downloads. Current: ${downloadCheck.current}, Limit: ${downloadCheck.limit}`
+      });
+
+      return res.status(403).json({
+        message: "Your account has been blocked for excessive downloads",
+        current: downloadCheck.current,
+        limit: downloadCheck.limit,
+        reason: "Excessive download activity detected"
+      });
+    } else if (downloadCheck.isModeratelyExceeded) {
+      // Moderately exceeded - warning
+      await logActivity(req.user, "High Download Activity Warning", req.ip, {
+        riskScore: 0.7,
+        details: `High download activity. Current: ${downloadCheck.current}, Limit: ${downloadCheck.limit}`
+      });
+
+      return res.status(429).json({
+        message: "High download activity detected - please reduce frequency",
+        current: downloadCheck.current,
+        limit: downloadCheck.limit,
+        warning: "You are approaching excessive download limits"
+      });
+    } else if (downloadCheck.exceeded) {
+      // Standard limit exceeded
       await logActivity(req.user, "Download Limit Exceeded", req.ip, {
-        riskScore: 0.8,
+        riskScore: 0.6,
         details: `Download limit exceeded during work hours. Current: ${downloadCheck.current}, Limit: ${downloadCheck.limit}`
       });
 
@@ -241,17 +292,20 @@ router.get("/download-files", protect(["Admin", "Manager", "Analyst", "Intern"])
     // Evaluate risk
     const risk = await evaluateRisk(req.user.id, req.ip);
     
+    // Normalize risk score to 0-1 range (risk.score is 0-20, normalize to 0-1)
+    const normalizedRiskScore = Math.min(risk.score / 20, 1);
+    
     // Log the download activity
     await logActivity(req.user, "Downloaded Files", req.ip, {
-      riskScore: risk.score,
-      details: `File download with risk score: ${(risk.score * 100).toFixed(1)}%`
+      riskScore: normalizedRiskScore,
+      details: `File download with risk score: ${(normalizedRiskScore * 100).toFixed(1)}%`
     });
 
     // Evaluate behavior using the behavior monitor
     const behaviorEvaluation = await behaviorMonitor.evaluateBehavior(
       req.user, 
       "Download Files", 
-      risk.score, 
+      normalizedRiskScore, 
       `File download from IP: ${req.ip}`
     );
 
@@ -262,7 +316,7 @@ router.get("/download-files", protect(["Admin", "Manager", "Analyst", "Intern"])
     if (behaviorEvaluation.shouldBlock) {
       return res.status(403).json({
         message: "You have been blocked due to suspicious behavior",
-        riskScore: risk.score,
+        riskScore: normalizedRiskScore,
         reasons: behaviorEvaluation.reason,
         blockedAt: req.user.blockedAt
       });
@@ -271,7 +325,7 @@ router.get("/download-files", protect(["Admin", "Manager", "Analyst", "Intern"])
     // If everything is okay, allow the download
     res.json({
       message: `${req.user.role} downloaded files successfully`,
-      riskScore: risk.score,
+      riskScore: normalizedRiskScore,
       downloadCount: downloadCheck.current + 1,
       limit: downloadCheck.limit,
       workHours: behaviorMonitor.isWorkHours()
@@ -357,6 +411,56 @@ router.post("/send-weekly-summary", protect(["Admin"]), async (req, res) => {
   } catch (error) {
     console.error("Error sending weekly summary:", error);
     res.status(500).json({ message: "Failed to send weekly summary" });
+  }
+});
+
+// Mock user creation for testing (when MongoDB is not available)
+router.post("/create-test-user", async (req, res) => {
+  try {
+    // Create a mock user for testing AI features
+    const mockUser = {
+      _id: "test-user-123",
+      name: "Test User",
+      email: "test@example.com",
+      role: "Analyst",
+      isBlocked: false,
+      createdAt: new Date()
+    };
+    
+    // Create mock activity logs for AI analysis
+    const mockActivities = [
+      {
+        userId: mockUser._id,
+        action: "download",
+        timestamp: new Date(Date.now() - 2 * 24 * 60 * 60 * 1000), // 2 days ago
+        ipAddress: "192.168.1.100",
+        additionalData: { riskScore: 0.3, workHours: true }
+      },
+      {
+        userId: mockUser._id,
+        action: "access",
+        timestamp: new Date(Date.now() - 1 * 24 * 60 * 60 * 1000), // 1 day ago
+        ipAddress: "192.168.1.100",
+        additionalData: { riskScore: 0.2, workHours: true }
+      },
+      {
+        userId: mockUser._id,
+        action: "download",
+        timestamp: new Date(Date.now() - 12 * 60 * 60 * 1000), // 12 hours ago
+        ipAddress: "192.168.1.100",
+        additionalData: { riskScore: 0.4, workHours: false }
+      }
+    ];
+    
+    res.json({
+      success: true,
+      message: "Test user created successfully",
+      user: mockUser,
+      activities: mockActivities
+    });
+  } catch (error) {
+    console.error("Error creating test user:", error);
+    res.status(500).json({ message: "Failed to create test user" });
   }
 });
 

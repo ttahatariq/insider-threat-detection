@@ -11,7 +11,11 @@ const userSchema = new mongoose.Schema({
   },
   isBlocked: { type: Boolean, default: false },
   blockedAt: Date,
-  riskNotes: [String],
+  riskNotes: [{
+    reason: String,
+    timestamp: { type: Date, default: Date.now },
+    action: String
+  }],
 
   createdAt: { type: Date, default: Date.now },
 });

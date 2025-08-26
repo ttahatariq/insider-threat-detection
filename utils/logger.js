@@ -1,5 +1,30 @@
 const ActivityLog = require("../models/ActivityLog");
 
+// Enhanced logger utility with multiple logging levels
+const logger = {
+  info: (message, data = {}) => {
+    const timestamp = new Date().toISOString();
+    console.log(`[INFO] ${timestamp}: ${message}`, data);
+  },
+  
+  warn: (message, data = {}) => {
+    const timestamp = new Date().toISOString();
+    console.warn(`[WARN] ${timestamp}: ${message}`, data);
+  },
+  
+  error: (message, data = {}) => {
+    const timestamp = new Date().toISOString();
+    console.error(`[ERROR] ${timestamp}: ${message}`, data);
+  },
+  
+  debug: (message, data = {}) => {
+    if (process.env.NODE_ENV === 'development') {
+      const timestamp = new Date().toISOString();
+      console.log(`[DEBUG] ${timestamp}: ${message}`, data);
+    }
+  }
+};
+
 const logActivity = async (user, action, ip, additionalData = {}) => {
   try {
     await ActivityLog.create({
@@ -16,8 +41,8 @@ const logActivity = async (user, action, ip, additionalData = {}) => {
       }
     });
   } catch (error) {
-    console.error("Logging error:", error);
+    logger.error("Logging error:", error);
   }
 };
 
-module.exports = logActivity;
+module.exports = { logActivity, logger };

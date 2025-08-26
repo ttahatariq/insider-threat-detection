@@ -54,10 +54,16 @@ class BehaviorMonitor {
     const currentCount = await this.getWorkHoursDownloadCount(userId, role);
     const limit = this.downloadLimits[role] || 5;
     
+    // Check for excessive downloads that should trigger immediate action
+    const isExcessive = currentCount > (limit * 3); // 3x the limit
+    const isModeratelyExceeded = currentCount > (limit * 1.5); // 1.5x the limit
+    
     return {
       exceeded: currentCount >= limit,
       current: currentCount,
-      limit: limit
+      limit: limit,
+      isExcessive,
+      isModeratelyExceeded
     };
   }
 
@@ -105,17 +111,56 @@ class BehaviorMonitor {
     if (action.toLowerCase().includes('download')) {
       const downloadCheck = await this.checkDownloadLimit(user._id, user.role);
       
-      if (downloadCheck.exceeded) {
+      if (downloadCheck.isExcessive) {
+        // Excessive downloads - immediate blocking
+        result.shouldBlock = true;
+        result.shouldNotify = true;
+        result.reason = `CRITICAL: Excessive downloads detected. Current: ${downloadCheck.current}, Limit: ${downloadCheck.limit} (${Math.round(downloadCheck.current/downloadCheck.limit)}x over limit)`;
+        result.action = 'block';
+        
+        // Send immediate admin alert
+        try {
+          await sendAdminAlert(
+            user, 
+            'CRITICAL: Excessive Downloads - User Blocked', 
+            riskScore, 
+            `User blocked for excessive downloads during work hours. Current: ${downloadCheck.current}, Limit: ${downloadCheck.limit}`
+          );
+        } catch (emailError) {
+          console.error('Failed to send admin alert email:', emailError);
+        }
+      } else if (downloadCheck.isModeratelyExceeded) {
+        // Moderately exceeded - high risk notification
+        result.shouldNotify = true;
+        result.reason = `High download activity. Current: ${downloadCheck.current}, Limit: ${downloadCheck.limit} (${Math.round(downloadCheck.current/downloadCheck.limit)}x over limit)`;
+        
+        // Send email to admin
+        try {
+          await sendAdminAlert(
+            user, 
+            'High Download Activity Warning', 
+            riskScore, 
+            `User showing high download activity during work hours. Current: ${downloadCheck.current}, Limit: ${downloadCheck.limit}`
+          );
+        } catch (emailError) {
+          console.error('Failed to send admin alert email:', emailError);
+        }
+      } else if (downloadCheck.exceeded) {
+        // Slightly exceeded - standard notification
         result.shouldNotify = true;
         result.reason = `Download limit exceeded during work hours. Current: ${downloadCheck.current}, Limit: ${downloadCheck.limit}`;
         
         // Send email to admin
-        await sendAdminAlert(
-          user, 
-          'Download Limit Exceeded', 
-          riskScore, 
-          `User exceeded daily download limit during work hours. Current: ${downloadCheck.current}, Limit: ${downloadCheck.limit}`
-        );
+        try {
+          await sendAdminAlert(
+            user, 
+            'Download Limit Exceeded', 
+            riskScore, 
+            `User exceeded daily download limit during work hours. Current: ${downloadCheck.current}, Limit: ${downloadCheck.limit}`
+          );
+        } catch (emailError) {
+          console.error('Failed to send admin alert email:', emailError);
+        }
       }
     }
 
@@ -126,13 +171,17 @@ class BehaviorMonitor {
       result.reason = 'Weekly violation limit exceeded (3+ suspicious activities)';
       result.action = 'block';
       
-      // Send email to admin
-      await sendAdminAlert(
-        user, 
-        'Weekly Violation Limit Exceeded', 
-        riskScore, 
-        'User has exceeded weekly violation limit and will be blocked'
-      );
+              // Send email to admin (don't block if email fails)
+        try {
+          await sendAdminAlert(
+            user, 
+            'Weekly Violation Limit Exceeded', 
+            riskScore, 
+            'User has exceeded weekly violation limit and will be blocked'
+          );
+        } catch (emailError) {
+          console.error('Failed to send admin alert email:', emailError);
+        }
     }
 
     // Check risk score threshold
@@ -141,13 +190,17 @@ class BehaviorMonitor {
       result.reason = `Risk score ${(riskScore * 100).toFixed(1)}% exceeds blocking threshold for role ${user.role}`;
       result.action = 'block';
       
-      // Send email to admin
-      await sendAdminAlert(
-        user, 
-        'High Risk Score - User Blocked', 
-        riskScore, 
-        `User blocked due to high risk score: ${(riskScore * 100).toFixed(1)}%`
-      );
+              // Send email to admin (don't block if email fails)
+        try {
+          await sendAdminAlert(
+            user, 
+            'High Risk Score - User Blocked', 
+            riskScore, 
+            `User blocked due to high risk score: ${(riskScore * 100).toFixed(1)}%`
+          );
+        } catch (emailError) {
+          console.error('Failed to send admin alert email:', emailError);
+        }
     }
 
     // Always notify admin for high risk activities
@@ -157,13 +210,17 @@ class BehaviorMonitor {
         result.reason = `High risk activity detected: ${(riskScore * 100).toFixed(1)}%`;
       }
       
-      // Send email to admin
-      await sendAdminAlert(
-        user, 
-        'High Risk Activity Detected', 
-        riskScore, 
-        details
-      );
+              // Send email to admin (don't block if email fails)
+        try {
+          await sendAdminAlert(
+            user, 
+            'High Risk Activity Detected', 
+            riskScore, 
+            details
+          );
+        } catch (emailError) {
+          console.error('Failed to send admin alert email:', emailError);
+        }
     }
 
     return result;
@@ -171,27 +228,32 @@ class BehaviorMonitor {
 
   // Apply behavior consequences
   async applyConsequences(user, evaluation) {
-    if (evaluation.shouldBlock) {
-      user.isBlocked = true;
-      user.blockedAt = new Date();
-      user.riskNotes.push({
-        reason: evaluation.reason,
-        timestamp: new Date(),
-        action: evaluation.action
-      });
-      
-      await user.save();
-      console.log(`User ${user.email} blocked: ${evaluation.reason}`);
-    } else if (evaluation.shouldNotify) {
-      // Add risk note for monitoring
-      user.riskNotes.push({
-        reason: evaluation.reason,
-        timestamp: new Date(),
-        action: 'monitor'
-      });
-      
-      await user.save();
-      console.log(`User ${user.email} flagged for monitoring: ${evaluation.reason}`);
+    try {
+      if (evaluation.shouldBlock) {
+        user.isBlocked = true;
+        user.blockedAt = new Date();
+        user.riskNotes.push({
+          reason: evaluation.reason,
+          timestamp: new Date(),
+          action: evaluation.action
+        });
+        
+        await user.save();
+        console.log(`User ${user.email} blocked: ${evaluation.reason}`);
+      } else if (evaluation.shouldNotify) {
+        // Add risk note for monitoring
+        user.riskNotes.push({
+          reason: evaluation.reason,
+          timestamp: new Date(),
+          action: 'monitor'
+        });
+        
+        await user.save();
+        console.log(`User ${user.email} flagged for monitoring: ${evaluation.reason}`);
+      }
+    } catch (error) {
+      console.error('Error applying behavior consequences:', error);
+      // Don't throw error to prevent blocking the main flow
     }
   }
 
