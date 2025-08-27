@@ -46,8 +46,8 @@ In `utils/emailService.js`, update the email configuration:
 const emailConfig = {
   service: 'gmail',
   auth: {
-    user: process.env.EMAIL_USER || 'tahatariq273@gmail.com',
-    pass: process.env.EMAIL_PASS || 'Taha@1391418912619261'
+    user: process.env.EMAIL_USER ,
+    pass: process.env.EMAIL_PASS 
   }
 };
 ```
