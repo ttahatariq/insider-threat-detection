@@ -7,15 +7,21 @@ const { logger } = require('../utils/logger');
 class AIThreatDetector {
   constructor() {
     // Initialize OpenAI client only if API key is available
-    if (process.env.OPENAI_API_KEY) {
+    if (process.env.OPENAI_API_KEY && process.env.OPENAI_API_KEY !== 'your-openai-api-key-here') {
       this.openai = new OpenAI({
         apiKey: process.env.OPENAI_API_KEY
       });
       this.aiAvailable = true;
+      console.log('✅ OpenAI API key configured successfully');
     } else {
       this.openai = null;
       this.aiAvailable = false;
-      console.log('⚠️  OpenAI API key not configured. AI analysis will use fallback rules.');
+      if (!process.env.OPENAI_API_KEY) {
+        console.log('⚠️  OpenAI API key not found in environment variables');
+      } else if (process.env.OPENAI_API_KEY === 'your-openai-api-key-here') {
+        console.log('⚠️  OpenAI API key is still set to placeholder value. Please update your .env file');
+      }
+      console.log('⚠️  AI analysis will use fallback rules.');
     }
     
     this.analysisThresholds = {
@@ -178,9 +184,58 @@ class AIThreatDetector {
         aiResponse: analysis
       };
     } catch (error) {
-      console.error('OpenAI API error:', error);
-      // Fallback to rule-based analysis
-      return this.fallbackAnalysis(analysisData);
+      // Handle specific OpenAI API errors
+      if (error.code === 'insufficient_quota' || error.status === 429) {
+        console.warn('⚠️  OpenAI API quota exceeded. Switching to fallback analysis.');
+        logger.warn('OpenAI API quota exceeded - using fallback analysis', {
+          error: error.message,
+          code: error.code,
+          status: error.status
+        });
+        
+        // Disable AI temporarily to prevent repeated quota errors
+        this.aiAvailable = false;
+        this.openai = null;
+        
+        return {
+          ...this.fallbackAnalysis(analysisData),
+          aiResponse: 'AI analysis unavailable due to quota exceeded - using fallback rules',
+          quotaExceeded: true
+        };
+      } else if (error.code === 'invalid_api_key') {
+        console.error('❌ Invalid OpenAI API key. Please check your configuration.');
+        logger.error('Invalid OpenAI API key', { error: error.message });
+        this.aiAvailable = false;
+        this.openai = null;
+        
+        return {
+          ...this.fallbackAnalysis(analysisData),
+          aiResponse: 'AI analysis unavailable due to invalid API key - using fallback rules',
+          apiKeyError: true
+        };
+      } else if (error.code === 'rate_limit_exceeded') {
+        console.warn('⚠️  OpenAI API rate limit exceeded. Retrying with fallback analysis.');
+        logger.warn('OpenAI API rate limit exceeded', { error: error.message });
+        
+        return {
+          ...this.fallbackAnalysis(analysisData),
+          aiResponse: 'AI analysis temporarily unavailable due to rate limits - using fallback rules',
+          rateLimited: true
+        };
+      } else {
+        console.error('OpenAI API error:', error);
+        logger.error('OpenAI API error', { 
+          error: error.message, 
+          code: error.code, 
+          status: error.status 
+        });
+        
+        return {
+          ...this.fallbackAnalysis(analysisData),
+          aiResponse: 'AI analysis failed - using fallback rules',
+          aiError: true
+        };
+      }
     }
   }
 
@@ -197,8 +252,8 @@ Activity Summary:
 - Work Hours Activity: ${analysisData.summary.workHoursActivity}
 - After Hours Activity: ${analysisData.summary.afterHoursActivity}
 - Download Activity: ${analysisData.summary.downloadActivity}
-- Unique Actions: ${analysisData.summary.uniqueActions.join(', ')}
-- IP Addresses Used: ${analysisData.summary.ipAddresses.join(', ')}
+- Unique Actions: ${analysisData.summary.uniqueActions ? analysisData.summary.uniqueActions.join(', ') : 'None'}
+- IP Addresses Used: ${analysisData.summary.ipAddresses ? analysisData.summary.ipAddresses.join(', ') : 'None'}
 
 Access Patterns:
 - Rapid Succession Actions: ${analysisData.summary.accessPatterns.rapidSuccession}
@@ -206,7 +261,7 @@ Access Patterns:
 - Repetitive Actions: ${analysisData.summary.accessPatterns.repetitiveActions}
 - Action Variety: ${analysisData.summary.accessPatterns.mixedActions}
 
-Risk Scores: ${analysisData.summary.riskScores.join(', ')}
+Risk Scores: ${analysisData.summary.riskScores ? analysisData.summary.riskScores.join(', ') : 'None'}
 
 Provide:
 1. Risk Score (0.0-1.0) - 0.0 = No risk, 1.0 = High risk
@@ -247,37 +302,98 @@ RECOMMENDATIONS:
   fallbackAnalysis(analysisData) {
     let riskScore = 0;
     const recommendations = [];
+    const warnings = [];
 
     // Calculate risk based on patterns
     if (analysisData.summary.afterHoursActivity > analysisData.summary.workHoursActivity * 0.3) {
       riskScore += 0.2;
       recommendations.push('High after-hours activity detected');
+      warnings.push(`After-hours activity: ${analysisData.summary.afterHoursActivity} vs work hours: ${analysisData.summary.workHoursActivity}`);
     }
 
     if (analysisData.summary.accessPatterns.rapidSuccession > 5) {
       riskScore += 0.2;
       recommendations.push('Rapid succession of actions detected');
+      warnings.push(`Rapid succession actions: ${analysisData.summary.accessPatterns.rapidSuccession}`);
     }
 
     if (analysisData.summary.downloadActivity > 10) {
       riskScore += 0.2;
       recommendations.push('High download activity detected');
+      warnings.push(`Download activity: ${analysisData.summary.downloadActivity} files`);
     }
 
     if (analysisData.summary.ipAddresses.length > 3) {
       riskScore += 0.1;
       recommendations.push('Multiple IP addresses used');
+      warnings.push(`IP addresses used: ${analysisData.summary.ipAddresses.length} different locations`);
     }
 
-    const avgRiskScore = analysisData.summary.riskScores.reduce((a, b) => a + b, 0) / analysisData.summary.riskScores.length;
+    // Check for unusual access patterns
+    if (analysisData.summary.accessPatterns.unusualHours > analysisData.summary.totalActivities * 0.4) {
+      riskScore += 0.15;
+      recommendations.push('High percentage of unusual hours activity');
+      warnings.push(`Unusual hours activity: ${analysisData.summary.accessPatterns.unusualHours} out of ${analysisData.summary.totalActivities} total activities`);
+    }
+
+    // Check for repetitive actions (potential automation)
+    if (analysisData.summary.accessPatterns.repetitiveActions > analysisData.summary.totalActivities * 0.5) {
+      riskScore += 0.1;
+      recommendations.push('High repetitive action pattern detected');
+      warnings.push(`Repetitive actions: ${analysisData.summary.accessPatterns.repetitiveActions} out of ${analysisData.summary.totalActivities} total activities`);
+    }
+
+    // Calculate average risk from individual activity scores
+    const avgRiskScore = analysisData.summary.riskScores.length > 0 
+      ? analysisData.summary.riskScores.reduce((a, b) => a + b, 0) / analysisData.summary.riskScores.length
+      : 0;
     riskScore += avgRiskScore * 0.3;
 
     riskScore = Math.min(riskScore, 1.0);
 
+    // Determine risk level
+    let riskLevel = 'Low';
+    if (riskScore >= this.analysisThresholds.highRisk) riskLevel = 'High';
+    else if (riskScore >= this.analysisThresholds.mediumRisk) riskLevel = 'Medium';
+
     return {
       riskScore,
-      analysis: 'Fallback analysis: ' + (riskScore > 0.6 ? 'Suspicious patterns detected' : 'Normal behavior patterns'),
-      recommendations: recommendations.length > 0 ? recommendations : ['No immediate concerns detected']
+      riskLevel,
+      analysis: `Fallback analysis (${riskLevel} Risk): ${riskScore > 0.6 ? 'Suspicious patterns detected' : 'Normal behavior patterns'}`,
+      recommendations: recommendations.length > 0 ? recommendations : ['No immediate concerns detected'],
+      warnings: warnings,
+      fallbackUsed: true,
+      analysisMethod: 'Rule-based fallback'
+    };
+  }
+
+  // Check and reset AI availability
+  checkAIAvailability() {
+    if (process.env.OPENAI_API_KEY && !this.openai) {
+      try {
+        this.openai = new OpenAI({
+          apiKey: process.env.OPENAI_API_KEY
+        });
+        this.aiAvailable = true;
+        console.log('✅ OpenAI API re-enabled');
+        logger.info('OpenAI API re-enabled after previous error');
+        return true;
+      } catch (error) {
+        console.error('Failed to re-enable OpenAI API:', error);
+        return false;
+      }
+    }
+    return this.aiAvailable;
+  }
+
+  // Get system status including AI availability
+  getSystemStatus() {
+    return {
+      aiAvailable: this.aiAvailable,
+      openaiConfigured: !!process.env.OPENAI_API_KEY,
+      thresholds: this.analysisThresholds,
+      patterns: Object.keys(this.behaviorPatterns),
+      lastCheck: new Date().toISOString()
     };
   }
 

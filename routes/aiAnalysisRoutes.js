@@ -46,6 +46,7 @@ router.get('/status', async (req, res) => {
         thresholds: aiThreatDetector.analysisThresholds,
         patterns: Object.keys(aiThreatDetector.behaviorPatterns)
       },
+      aiStatus: aiThreatDetector.getSystemStatus(),
       lastAnalysis: new Date().toISOString()
     };
 
@@ -351,6 +352,64 @@ router.post('/scheduler/:action', async (req, res) => {
       success: false,
       error: 'Failed to control scheduler',
       details: error.message
+    });
+  }
+});
+
+// Check and reset AI availability
+router.post('/reset-ai', async (req, res) => {
+  try {
+    logger.info('Admin requested AI availability reset');
+    
+    const wasAvailable = aiThreatDetector.aiAvailable;
+    const resetSuccess = aiThreatDetector.checkAIAvailability();
+    const currentStatus = aiThreatDetector.getSystemStatus();
+    
+    res.json({
+      success: true,
+      message: resetSuccess ? 'AI availability reset successfully' : 'AI reset failed - check API key configuration',
+      data: {
+        wasAvailable,
+        isNowAvailable: resetSuccess,
+        currentStatus
+      }
+    });
+  } catch (error) {
+    logger.error('Error resetting AI availability:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to reset AI availability',
+      details: error.message
+    });
+  }
+});
+
+// Get detailed AI error information
+router.get('/ai-errors', async (req, res) => {
+  try {
+    const status = aiThreatDetector.getSystemStatus();
+    
+    res.json({
+      success: true,
+      data: {
+        aiAvailable: status.aiAvailable,
+        openaiConfigured: status.openaiConfigured,
+        lastCheck: status.lastCheck,
+        recommendations: status.aiAvailable ? 
+          ['AI is working normally'] : 
+          [
+            'Check OpenAI API key configuration',
+            'Verify API quota and billing status',
+            'Consider using fallback analysis temporarily',
+            'Contact OpenAI support if quota issues persist'
+          ]
+      }
+    });
+  } catch (error) {
+    logger.error('Error getting AI error information:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to get AI error information'
     });
   }
 });
