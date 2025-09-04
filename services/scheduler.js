@@ -379,10 +379,20 @@ class Scheduler {
     };
 
     this.jobs.forEach((job, name) => {
-      status.jobs[name] = {
-        running: job.running,
-        nextRun: job.nextDate()
-      };
+      try {
+        status.jobs[name] = {
+          running: job.getStatus() === 'scheduled',
+          nextRun: job.getNextRun ? job.getNextRun() : 'Unknown',
+          status: job.getStatus()
+        };
+      } catch (error) {
+        status.jobs[name] = {
+          running: false,
+          nextRun: 'Error getting next run',
+          status: 'error',
+          error: error.message
+        };
+      }
     });
 
     return status;
